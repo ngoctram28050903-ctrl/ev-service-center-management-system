@@ -8,7 +8,7 @@ const PartsUsage = sequelize.define("partsUsage", {
   quantityUsed: { type: DataTypes.INTEGER, allowNull: false },
 });
 
-Part.hasMany(PartsUsage, { foreignKey: "partId" });
-PartsUsage.belongsTo(Part, { foreignKey: "partId" });
+Part.hasMany(PartsUsage, { foreignKey: "partId", as: "PartsUsages" });
+PartsUsage.belongsTo(Part, { foreignKey: "partId", as: "Part" });
 
 export default PartsUsage;
