@@ -1,0 +1,153 @@
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: ev_mysql
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: 123456789
+    ports:
+      - "3307:3306"
+    volumes:
+      - ./mysql:/docker-entrypoint-initdb.d
+    networks:
+      - ev_network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      retries: 10
+      timeout: 5s
+
+  auth-service:
+    build: ../ev-service-center-backend/auth-service
+    container_name: ev_auth_service
+    env_file: 
+      - ../ev-service-center-backend/auth-service/.env
+    ports:
+      - "5001:5001"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    command: sh -c "sleep 10 && node index.js" 
+    networks:
+      - ev_network
+    restart: always
+
+  booking-service:
+    build: ../ev-service-center-backend/booking-service
+    container_name: ev_booking_service
+    env_file:
+      - ../ev-service-center-backend/booking-service/.env
+    ports:
+      - "5002:5002"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    command: sh -c "sleep 10 && node index.js"
+    networks:
+      - ev_network
+    restart: always
+
+  finance-service:
+    build: ../ev-service-center-backend/finance-service
+    container_name: ev_finance_service
+    env_file: 
+      - ../ev-service-center-backend/finance-service/.env
+    ports:
+      - "5003:5003"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    command: sh -c "sleep 10 && node index.js"   
+    networks:
+      - ev_network
+    restart: always
+
+  inventory-service:
+    build: ../ev-service-center-backend/inventory-service
+    container_name: ev_inventory_service
+    env_file: 
+      - ../ev-service-center-backend/inventory-service/.env
+    ports:
+      - "5004:5004"
+    depends_on:
+      mysql:
+       condition: service_healthy
+    command: sh -c "sleep 10 && node index.js"
+    networks:
+      - ev_network
+    restart: always
+
+  notification-service:
+    build: ../ev-service-center-backend/notification-service
+    container_name: ev_notification_service
+    env_file: 
+      - ../ev-service-center-backend/notification-service/.env
+    ports:
+      - "5005:5005"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    command: sh -c "sleep 10 && node index.js"
+    networks:
+      - ev_network
+    restart: always
+
+  vehicle-service:
+    build: ../ev-service-center-backend/vehicle-service
+    container_name: ev_vehicle_service
+    env_file: 
+      - ../ev-service-center-backend/vehicle-service/.env
+    ports:
+      - "5006:5006"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    command: sh -c "sleep 10 && node index.js"
+    networks:
+      - ev_network
+    restart: always
+
+  workorder-service:  
+    build: ../ev-service-center-backend/workorder-service
+    container_name: ev_workorder_service
+    env_file: 
+      - ../ev-service-center-backend/workorder-service/.env
+    ports:
+      - "5007:5007"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    command: sh -c "sleep 10 && node index.js"
+    networks:
+      - ev_network
+    restart: always
+  
+  api-gateway:
+    build:
+      context: ../api-gateway
+      dockerfile: Dockerfile
+    image: ev/api-gateway:latest
+    container_name: api-gateway
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - NODE_ENV=production
+      - PORT=8080
+    depends_on:
+      - auth-service
+      - booking-service
+      - vehicle-service
+      - workorder-service
+      - finance-service
+      - inventory-service
+      # - chat-service
+      - notification-service
+    networks:
+      - ev_network
+
+networks:
+  ev_network:
+    name: infra_ev_network
+    driver: bridge
