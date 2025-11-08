@@ -3,7 +3,7 @@ import {
   getAllWorkOrders,
   getWorkOrderById,
   createWorkOrder,
-  updateWorkOrder,
+  updateWorkOrderStatus,
   deleteWorkOrder,
   addChecklistItem,
   getChecklistItems,
@@ -24,7 +24,7 @@ router.get('/stats/tasks', getTaskStats);
 router.get('/checklist/all', getAllChecklistItems);
 router.get('/:id', getWorkOrderById);
 router.post('/', createWorkOrder);
-router.put('/:id', updateWorkOrder);
+router.put('/:id', updateWorkOrderStatus);
 router.delete('/:id', deleteWorkOrder);
 
 // Checklist items

@@ -1,6 +1,6 @@
 import { DataTypes } from "sequelize";
 import sequelize from "../config/db.js";
-import WorkOrder from "./workorder.js";
+import WorkOrder from "./workOrder.js";
 
 const ChecklistItem = sequelize.define("ChecklistItem", {
   id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },

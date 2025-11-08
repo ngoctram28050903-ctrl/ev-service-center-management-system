@@ -1,7 +1,7 @@
-// Nhập các model từ database
 import Part from "../models/part.js";
 import StockLog from "../models/stockLog.js";
 import { publishToExchange } from '../utils/rabbitmq.js';
+import redisClient from '../config/redis.js';
 import PartsUsage from "../models/partsUsage.js";
 import { Op } from "sequelize";
 import sequelize from "../config/db.js";
@@ -13,12 +13,36 @@ import {
   PAGINATION_DEFAULTS 
 } from "../constants/stockConstants.js";
 
+// Định nghĩa thời gian hết hạn (Time-To-Live)
+const PART_DETAIL_TTL = 3600;      // 1 giờ: Cache chi tiết vật tư (vì nó nặng)
+const PART_LIST_TTL = 300;         // 5 phút: Cache danh sách vật tư (thay đổi thường xuyên)
+const PART_STATS_TTL = 3600;       // 1 giờ: Cache thống kê (stats)
+const PART_HISTORY_TTL = 3600;     // 1 giờ: Cache lịch sử kho (paginated)
+// Hàm helper để tạo key cho danh sách, tránh lặp code
+const getPartsListCacheKey = (query) => {
+  const { 
+    page = PAGINATION_DEFAULTS.PAGE, 
+    limit = PAGINATION_DEFAULTS.LIMIT, 
+    search, 
+    minStock 
+  } = query;
+  // Key phải đại diện cho TẤT CẢ các tham số query
+  return `parts:list:page:${page}:limit:${limit}:search:${search || 'all'}:minStock:${minStock || 'all'}`;
+};
+
 /**
  * Lấy tất cả phụ tùng (hỗ trợ phân trang, tìm kiếm, và lọc theo số lượng tồn kho)
  */
 export const getParts = async (req, res) => {
   try {
+    const cacheKey = getPartsListCacheKey(req.query);
+    const cachedData = await redisClient.get(cacheKey);
+    if (cachedData) {
+      console.log(`[Cache] HIT for ${cacheKey}`);
+      return res.status(200).json(JSON.parse(cachedData));
+    }
     // Lấy các tham số query (phân trang và tìm kiếm)
+    console.log(`[Cache] MISS for ${cacheKey}`);
     const { page = PAGINATION_DEFAULTS.PAGE, limit = PAGINATION_DEFAULTS.LIMIT, search, minStock } = req.query;
     const offset = (page - 1) * limit;
 
@@ -54,7 +78,7 @@ export const getParts = async (req, res) => {
     });
 
     // Trả về dữ liệu kèm thông tin phân trang
-    res.status(200).json({
+    const responseData = {
       data: parts,
       total: count,
       page: parseInt(page),
@@ -62,7 +86,11 @@ export const getParts = async (req, res) => {
       totalPages: Math.ceil(count / parseInt(limit)),
       hasNext: offset + parseInt(limit) < count,
       hasPrev: parseInt(page) > 1
-    });
+    };
+    await redisClient.set(cacheKey, JSON.stringify(responseData), {
+      EX: PART_LIST_TTL
+    });
+    res.status(200).json(responseData);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -74,6 +102,13 @@ export const getParts = async (req, res) => {
 export const getPartById = async (req, res) => {
   try {
     const { id } = req.params;
+    const cacheKey = `part:detail:${id}`;
+    if (cachedData) {
+      console.log(`[Cache] HIT for ${cacheKey}`);
+      return res.status(200).json({ data: JSON.parse(cachedData) });
+    }
+
+    console.log(`[Cache] MISS for ${cacheKey}`);
     const part = await Part.findByPk(id, {
       include: [
         {
@@ -94,6 +129,9 @@ export const getPartById = async (req, res) => {
     if (!part) {
       return res.status(404).json({ message: "Part not found" });
     }
+    await redisClient.set(cacheKey, JSON.stringify(part), {
+      EX: PART_DETAIL_TTL
+    });
 
     res.status(200).json({
       data: part
@@ -133,7 +171,6 @@ export const addPart = async (req, res) => {
       });
     }
 
-    // --- 📍 TÍCH HỢP RABBITMQ (1/2) ---
     // Gửi sự kiện nếu sắp hết hàng (ngay khi tạo)
     if (part.quantity < part.minStock) {
       await publishToExchange('inventory_events', {
@@ -141,7 +178,15 @@ export const addPart = async (req, res) => {
         payload: part // Gửi thông tin phụ tùng sắp hết
       });
     }
-    // -------------------------
+    // Xóa cache thống kê (vì totalParts đã thay đổi)
+    const statsCacheKey = `parts:stats:year:${new Date().getFullYear()}`;
+    await redisClient.del(statsCacheKey);
+    console.log(`[Cache] DELETED ${statsCacheKey}`);
+
+    // Xóa cache trang 1 của danh sách
+    const listCacheKey = getPartsListCacheKey({ page: 1 }); // Xóa cache trang 1
+    await redisClient.del(listCacheKey);
+    console.log(`[Cache] DELETED ${listCacheKey}`);
 
     res.status(201).json({
       data: part,
@@ -186,6 +231,11 @@ export const updatePart = async (req, res) => {
 
     await part.update(updateData);
     
+    // Dữ liệu chi tiết (name, minStock) đã thay đổi -> Xóa cache chi tiết
+    const cacheKey = `part:detail:${id}`;
+    await redisClient.del(cacheKey);
+    console.log(`[Cache] DELETED ${cacheKey}`);
+
     res.status(200).json({
       data: part,
       message: "Part updated successfully"
@@ -220,6 +270,16 @@ export const deletePart = async (req, res) => {
     
     // Xóa phụ tùng
     await part.destroy();
+
+    // Xóa cache chi tiết
+    const cacheKey = `part:detail:${id}`;
+    await redisClient.del(cacheKey);
+    console.log(`[Cache] DELETED ${cacheKey}`);
+
+    // Xóa cache thống kê (vì totalParts đã thay đổi)
+    const statsCacheKey = `parts:stats:year:${new Date().getFullYear()}`;
+    await redisClient.del(statsCacheKey);
+    console.log(`[Cache] DELETED ${statsCacheKey}`);
 
     res.status(200).json({ 
       message: "Part deleted successfully" 
@@ -281,7 +341,6 @@ export const updateStock = async (req, res) => {
       reason: reason || null
     });
 
-    // --- 📍 TÍCH HỢP RABBITMQ (2/2) ---
     // Gửi sự kiện nếu sắp hết hàng (sau khi giảm số lượng)
     const minStock = part.minStock || DEFAULT_VALUES.MIN_STOCK;
     if (part.quantity < minStock) {
@@ -290,7 +349,22 @@ export const updateStock = async (req, res) => {
         payload: part
       });
     }
-    // -------------------------
+
+    //'quantity' VÀ 'StockLog' (trong include) đã thay đổi
+    // -> Xóa cache chi tiết (nặng)
+    const detailCacheKey = `part:detail:${id}`;
+    await redisClient.del(detailCacheKey);
+    console.log(`[Cache] DELETED ${detailCacheKey}`);
+
+    //'totalQuantity' đã thay đổi -> Xóa cache thống kê
+    const statsCacheKey = `parts:stats:year:${new Date().getFullYear()}`;
+    await redisClient.del(statsCacheKey);
+    console.log(`[Cache] DELETED ${statsCacheKey}`);
+
+    //lịch sử kho đã thay đổi -> Xóa cache lịch sử kho (trang 1)
+    const historyCacheKey = `part:history:${id}:page:1:limit:${PAGINATION_DEFAULTS.STOCK_HISTORY_LIMIT}`;
+    await redisClient.del(historyCacheKey);
+    console.log(`[Cache] DELETED ${historyCacheKey}`);
 
     res.status(200).json({
       data: part,
@@ -310,6 +384,15 @@ export const getStockHistory = async (req, res) => {
     const { page = PAGINATION_DEFAULTS.PAGE, limit = PAGINATION_DEFAULTS.STOCK_HISTORY_LIMIT } = req.query;
     const offset = (page - 1) * limit;
 
+    const cacheKey = `part:history:${id}:page:${page}:limit:${limit}`;
+    
+    // 1. KIỂM TRA CACHE
+    const cachedData = await redisClient.get(cacheKey);
+    if (cachedData) {
+      console.log(`[Cache] HIT for ${cacheKey}`);
+      return res.status(200).json(JSON.parse(cachedData));
+    }
+    console.log(`[Cache] MISS for ${cacheKey}`);
     const part = await Part.findByPk(id);
     if (!part) {
       return res.status(404).json({ message: "Part not found" });
@@ -335,6 +418,12 @@ export const getStockHistory = async (req, res) => {
       hasNext: offset + parseInt(limit) < count,
       hasPrev: parseInt(page) > 1
     });
+
+    //LƯU VÀO CACHE
+    await redisClient.set(cacheKey, JSON.stringify(responseData), {
+      EX: PART_HISTORY_TTL
+    });
+    res.status(200).json(responseData);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -346,9 +435,16 @@ export const getStockHistory = async (req, res) => {
 export const getPartsStats = async (req, res) => {
   try {
     console.log('Start getPartsStats');
-    
     const year = parseInt(req.query.year) || new Date().getFullYear();
-    
+    const cacheKey = `parts:stats:year:${year}`;
+
+    const cachedData = await redisClient.get(cacheKey);
+    if (cachedData) {
+      console.log(`[Cache] HIT for ${cacheKey}`);
+      return res.status(200).json(JSON.parse(cachedData));
+    }
+
+    console.log(`[Cache] MISS for ${cacheKey}`);
     // Thống kê tổng số loại phụ tùng và tổng số lượng
     const totalStats = await Part.findAll({
       attributes: [
@@ -407,6 +503,13 @@ export const getPartsStats = async (req, res) => {
       data: partsStats,
       message: 'Parts stats retrieved successfully'
     });
+    //TTL dài
+    await redisClient.set(cacheKey, JSON.stringify(responseData), {
+      EX: PART_STATS_TTL
+    });
+
+    console.log('Parts stats result (from DB):', partsStats);
+    res.status(200).json(responseData);
   } catch (err) {
     console.error('Error getting parts stats:', err);
     res.status(500).json({ message: 'Failed to get parts stats' });

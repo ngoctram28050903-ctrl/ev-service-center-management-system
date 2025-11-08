@@ -9,6 +9,7 @@ services:
       - "3307:3306"
     volumes:
       - ./mysql:/docker-entrypoint-initdb.d
+      - ev_mysql_data:/var/lib/mysql
     networks:
       - ev_network
     healthcheck:
@@ -33,6 +34,21 @@ services:
       timeout: 5s
       retries: 10
       start_period: 5s
+
+  redis-cache:
+    image: redis:7-alpine
+    container_name: ev_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - ev_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"] 
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   auth-service:
     build: ../ev-service-center-backend/auth-service
@@ -181,4 +197,6 @@ networks:
     driver: bridge
 volumes:
   rabbitmq_data:
+  redis_data:
+  ev_mysql_data:
 

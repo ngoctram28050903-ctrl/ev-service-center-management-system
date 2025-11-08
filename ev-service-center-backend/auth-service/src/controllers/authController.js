@@ -3,8 +3,25 @@ import jwt from "jsonwebtoken";
 import { Op } from "sequelize";
 import sequelize from "../config/db.js";
 import { publishToExchange } from '../utils/rabbitmq.js';
+import redisClient from '../config/redis.js';
 import User from "../models/user.js";
 import RefreshToken from "../models/refreshToken.js";
+
+//thời gian hết hạn (Time-To-Live)
+const USER_DETAIL_TTL = 3600;      // 1 giờ: Cache chi tiết (profile)
+const USER_LIST_TTL = 300;         // 5 phút: Cache danh sách (thay đổi thường xuyên)
+const USER_STATS_TTL = 43200;      // 12 giờ: Cache thống kê (nặng, ít thay đổi)
+
+// Hàm helper để tạo key cho danh sách, tránh lặp code
+const getUserListCacheKey = (query) => {
+  const { name, username, email, role, page = 1, limit = 10 } = query;
+  return `users:list:page:${page}:limit:${limit}:name:${name || 'all'}:username:${username || 'all'}:email:${email || 'all'}:role:${role || 'all'}`;
+};
+// Hàm helper để tạo key cho stats
+const getUserStatsCacheKey = () => {
+  const currentYear = new Date().getFullYear();
+  return `users:stats:year:${currentYear}`;
+};
 
 export const register = async (req, res) => {
   try {
@@ -21,6 +38,11 @@ export const register = async (req, res) => {
       payload: user 
     });
 
+    // User mới -> thống kê thay đổi -> Xóa cache thống kê
+    const statsCacheKey = getUserStatsCacheKey();
+    await redisClient.del(statsCacheKey);
+    console.log(`[Cache] DELETED ${statsCacheKey} (due to new user)`);
+  
     res.status(201).json({ message: "User registered successfully", user });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -81,22 +103,29 @@ export const refresh = async (req, res) => {
 
 export const indexUsers = async (req, res) => {
   try {
+    const cacheKey = getUserListCacheKey(req.query);
+    const cachedData = await redisClient.get(cacheKey);
+    if (cachedData) {
+      console.log(`[Cache] HIT for ${cacheKey}`);
+      return res.status(200).json(JSON.parse(cachedData));
+    }
+    console.log(`[Cache] MISS for ${cacheKey}`);
     const { name, username, email, role, page = 1, limit = 10 } = req.query;
     
     const whereClause = {};
-    
+
     if (name) {
       whereClause.username = { [Op.like]: `%${name}%` };
     }
-    
+
     if (username) {
       whereClause.username = { [Op.like]: `%${username}%` };
     }
-    
+
     if (email) {
       whereClause.email = { [Op.like]: `%${email}%` };
     }
-    
+
     if (role) {
       whereClause.role = role;
     }
@@ -128,6 +157,10 @@ export const indexUsers = async (req, res) => {
       hasNext: offset + parseInt(limit) < count,
       hasPrev: parseInt(page) > 1
     });
+    await redisClient.set(cacheKey, JSON.stringify(responseData), {
+      EX: USER_LIST_TTL
+    });
+    res.status(200).json(responseData);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -136,16 +169,29 @@ export const indexUsers = async (req, res) => {
 export const getUserById = async (req, res) => {
   try {
     const { id } = req.params;
+    const cacheKey = `user:${id}`;
+    //kiểm tra cache
+    const cachedData = await redisClient.get(cacheKey);
+    if (cachedData) {
+      console.log(`[Cache] HIT for ${cacheKey}`);
+      // Dữ liệu lưu trong Redis là chuỗi JSON, parse lại
+      return res.status(200).json(JSON.parse(cachedData)); 
+    }
+    console.log(`[Cache] MISS for ${cacheKey}`);
     const user = await User.findByPk(id);
     if (!user) return res.status(404).json({ message: "User not found" });
-    return res.status(200).json({
+    const responseData = {
       id: user.id,
       username: user.username,
       email: user.email,
       userRoles: [{ role: { name: user.role } }],
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
+    };
+    await redisClient.set(cacheKey, JSON.stringify(responseData), {
+      EX: USER_DETAIL_TTL
     });
+    return res.status(200).json(responseData);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -163,6 +209,11 @@ export const createUser = async (req, res) => {
     const role = Array.isArray(roles) && roles.length > 0 ? roles[0] : "user";
     const hashedPassword = await bcrypt.hash(password, 10);
     const user = await User.create({ username, email, password: hashedPassword, role });
+
+    // User mới -> thống kê thay đổi -> Xóa cache thống kê
+    const statsCacheKey = getUserStatsCacheKey();
+    await redisClient.del(statsCacheKey);
+    console.log(`[Cache] DELETED ${statsCacheKey} (due to new user)`);
 
     res.status(201).json({
       id: user.id,
@@ -191,6 +242,11 @@ export const updateUser = async (req, res) => {
 
     await user.save();
 
+    // Dữ liệu chi tiết đã thay đổi -> Xóa cache chi tiết
+    const cacheKey = `user:${id}`;
+    await redisClient.del(cacheKey);
+    console.log(`[Cache] DELETED ${cacheKey}`);
+
     return res.status(200).json({
       id: user.id,
       username: user.username,
@@ -209,6 +265,17 @@ export const deleteUser = async (req, res) => {
     const { id } = req.params;
     const user = await User.findByPk(id);
     if (!user) return res.status(404).json({ message: "User not found" });
+
+    // Xóa cache chi tiết
+    const cacheKey = `user:${id}`;
+    await redisClient.del(cacheKey);
+    console.log(`[Cache] DELETED ${cacheKey}`);
+
+    // Xóa cache thống kê (vì totalUsers đã thay đổi)
+    const statsCacheKey = getUserStatsCacheKey();
+    await redisClient.del(statsCacheKey);
+    console.log(`[Cache] DELETED ${statsCacheKey}`);
+
     await user.destroy();
     return res.status(204).send();
   } catch (err) {
@@ -219,7 +286,15 @@ export const deleteUser = async (req, res) => {
 export const getUserStats = async (req, res) => {
   try {
     console.log('Start getUserStats');
-
+    const cacheKey = getUserStatsCacheKey();
+    const cachedData = await redisClient.get(cacheKey);
+    //kiểm tra 
+    if (cachedData) {
+      console.log(`[Cache] HIT for ${cacheKey}`);
+      // Thống kê đã được cache, trả về ngay
+      return res.status(200).json(JSON.parse(cachedData));
+    }
+    console.log(`[Cache] MISS for ${cacheKey}`);
     const totalStats = await User.findAll({
       attributes: [
         [sequelize.fn('COUNT', sequelize.col('id')), 'totalUsers']
@@ -268,6 +343,12 @@ export const getUserStats = async (req, res) => {
       data: userStats,
       message: 'User stats retrieved successfully'
     });
+
+    await redisClient.set(cacheKey, JSON.stringify(responseData), {
+      EX: USER_STATS_TTL
+    });
+    console.log('User stats result (from DB):', userStats);
+    res.status(200).json(responseData);
   } catch (err) {
     console.error('Error getting user stats:', err);
     res.status(500).json({ message: 'Failed to get user stats' });

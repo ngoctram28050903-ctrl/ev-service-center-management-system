@@ -1,5 +1,5 @@
 import { subscribeToExchange } from '../utils/rabbitmq.js';
-import WorkOrder from '../models/workorder.js';
+import WorkOrder from '../models/workOrder.js';
 
 /**
  * Hàm xử lý khi nhận được sự kiện tạo lịch hẹn mới
