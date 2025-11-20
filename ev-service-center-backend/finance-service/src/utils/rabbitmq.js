@@ -20,7 +20,6 @@ export const connectRabbitMQ = async (url) => {
   }
 };
 
-// --- CÁC HÀM CŨ (Dùng cho 1-1) ---
 
 /**
  * Gửi tin nhắn đến một Hàng đợi (Queue) cụ thể.
@@ -70,7 +69,6 @@ export const consumeMessage = async (queue, callback) => {
 };
 
 
-// --- CÁC HÀM MỚI (Pub/Sub 1-Nhiều) ---
 
 /**
  * Phát sóng tin nhắn đến một Sàn giao dịch (Exchange).

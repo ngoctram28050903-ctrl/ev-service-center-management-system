@@ -103,6 +103,7 @@ export const getPartById = async (req, res) => {
   try {
     const { id } = req.params;
     const cacheKey = `part:detail:${id}`;
+    const cachedData = await redisClient.get(cacheKey);
     if (cachedData) {
       console.log(`[Cache] HIT for ${cacheKey}`);
       return res.status(200).json({ data: JSON.parse(cachedData) });
@@ -386,7 +387,7 @@ export const getStockHistory = async (req, res) => {
 
     const cacheKey = `part:history:${id}:page:${page}:limit:${limit}`;
     
-    // 1. KIỂM TRA CACHE
+    // KIỂM TRA CACHE
     const cachedData = await redisClient.get(cacheKey);
     if (cachedData) {
       console.log(`[Cache] HIT for ${cacheKey}`);
@@ -406,7 +407,7 @@ export const getStockHistory = async (req, res) => {
       order: [['createdAt', 'DESC']]
     });
 
-    res.status(200).json({
+    const responseData = {
       data: {
         part: { id: part.id, name: part.name, partNumber: part.partNumber },
         stockLogs
@@ -417,7 +418,7 @@ export const getStockHistory = async (req, res) => {
       totalPages: Math.ceil(count / parseInt(limit)),
       hasNext: offset + parseInt(limit) < count,
       hasPrev: parseInt(page) > 1
-    });
+    };
 
     //LƯU VÀO CACHE
     await redisClient.set(cacheKey, JSON.stringify(responseData), {
@@ -499,10 +500,10 @@ export const getPartsStats = async (req, res) => {
 
     console.log('Parts stats result:', partsStats);
 
-    res.status(200).json({
+    const responseData = {
       data: partsStats,
       message: 'Parts stats retrieved successfully'
-    });
+    };
     //TTL dài
     await redisClient.set(cacheKey, JSON.stringify(responseData), {
       EX: PART_STATS_TTL
@@ -516,3 +517,29 @@ export const getPartsStats = async (req, res) => {
   }
 };
 
+export const getPartStatsInternal = async (req, res) => {
+  try {
+    const result = await getPartStats(req, res); 
+    res.status(200).json(result.data); 
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+export const getAllPartsInternal = async (req, res) => {
+  try {
+    const result = await getAllParts(req, res);
+    res.status(200).json(result.data);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+export const getPartByIdInternal = async (req, res) => {
+  try {
+    const result = await getPartById(req, res); 
+    res.status(200).json(result.data);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};

@@ -19,8 +19,7 @@ const handleWorkOrderEvent = async (message) => {
         workOrderId: payload.id,
         customerId: payload.userId, 
         amount: payload.totalPrice, // (Lấy tổng giá tiền)
-        status: 'pending', // Trạng thái 'chờ thanh toán'
-        dueDate: dueDate
+        status: 'pending' // Trạng thái 'chờ thanh toán'
       });
 
     console.log(`✅ New invoice created successfully: ${newInvoice.id}`);

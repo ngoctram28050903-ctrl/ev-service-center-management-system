@@ -14,7 +14,6 @@ app.use('/api/service-center', serviceCenterRoutes);
 app.get('/', (req, res) => res.send('📅 Booking Service is running'));
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
-
 (async () => {
   try {
     await sequelize.authenticate();

@@ -105,12 +105,30 @@ export const getWorkOrderById = async (req, res) => {
       }
     ] });
     if (!order) return res.status(404).json({ message: 'Work order not found' });
-    await redisClient.set(cacheKey, JSON.stringify(workOrder), {
+      const workOrderData = order.toJSON();
+        try {
+        // Fetch dữ liệu liên quan
+        const appointment = await bookingClient.getAppointmentById(workOrderData.appointmentId);
+        const vehicle = appointment ? await vehicleClient.getVehicleById(appointment.vehicleId) : null;
+        const user = workOrderData.userId ? await userClient.getUserById(workOrderData.userId) : null;
+        const createdBy = workOrderData.createdById ? await userClient.getUserById(workOrderData.createdById) : null;
+
+        // Gắn vào đối tượng trả về
+        workOrderData.appointmentDetails = appointment;
+        workOrderData.vehicleDetails = vehicle;
+        workOrderData.userDetails = user;
+        workOrderData.createdByDetails = createdBy;
+
+    } catch (enrichError) {
+        console.error("Error enriching work order details:", enrichError.message);
+        // Vẫn tiếp tục, chỉ là trả về dữ liệu không được làm giàu
+    }
+    await redisClient.set(cacheKey, JSON.stringify(workOrderData), {
       EX: WORKORDER_DETAIL_TTL
     });
 
     res.status(200).json({
-      data: workOrder
+      data: workOrderData
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -126,7 +144,7 @@ export const getWorkOrdersByUserId = async (req, res) => {
     const { page = 1, limit = 10 } = req.query;
     const offset = (page - 1) * limit;
 
-    // --- REDIS: Bước 3 (Cache Danh sách User) ---
+    // --- REDIS (Cache Danh sách User) ---
     const cacheKey = `workorders:user:${userId}:page:${page}:limit:${limit}`;
     
     // 1. KIỂM TRA CACHE
@@ -178,24 +196,9 @@ export const createWorkOrder = async (req, res) => {
       return res.status(400).json({ message: 'Work order already exists for this appointment' });
     }
 
-    //GỌI BOOKING-SERVICE ĐỂ LẤY THÔNG TIN LỊCH HẸN (VÀ userId)
-    let appointment;
-    try {
-      // Dùng gRPC client (hoặc REST) để gọi booking-service
-      // (Giả sử bạn dùng REST client như trong file của bạn)
-      appointment = await bookingClient.getAppointmentById(appointmentId);
-      if (!appointment) {
-        throw new Error('Appointment not found');
-      }
-    } catch (clientError) {
-      await t.rollback();
-      return res.status(404).json({ message: 'Appointment not found or booking service is down' });
-    }
-
     const workOrder = await WorkOrder.create({
       appointmentId,
       serviceCenterId,
-      userId: appointment.userId,
       status: 'pending',
       totalPrice: 0,
     }, { transaction: t });
@@ -402,7 +405,7 @@ export const updateChecklistItem = async (req, res) => {
     await redisClient.del(getTaskStatsCacheKey());
     // Gửi sự kiện khi một mục checklist thay đổi (vì giá có thể đã thay đổi)
     const updatedWorkOrder = await WorkOrder.findByPk(req.params.work_order_id);
-    await publishMessage('workorder_events', {
+    await publishToExchange('workorder_events', {
       type: 'WORKORDER_ITEM_UPDATED',
       payload: updatedWorkOrder // Gửi toàn bộ work order (với giá mới)
     });
@@ -732,5 +735,25 @@ export const getTaskStats = async (req, res) => {
   } catch (err) {
     console.error('Error getting task stats:', err);
     res.status(500).json({ message: 'Failed to get task stats' });
+  }
+};
+
+// (Hàm này dành cho client/index.js của finance-service)
+export const getRevenueStatsInternal = async (req, res) => {
+   try {
+    const result = await getRevenueStats(req, res); // Hoặc copy logic vào đây
+    res.status(200).json(result.data); // Trả về data trực tiếp
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// (Hàm này dành cho client/index.js của finance-service)
+export const getTaskStatsInternal = async (req, res) => {
+   try {
+    const result = await getTaskStats(req, res); // Hoặc copy logic vào đây
+    res.status(200).json(result.data); // Trả về data trực tiếp
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
 };

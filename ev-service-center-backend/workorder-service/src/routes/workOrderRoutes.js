@@ -14,6 +14,8 @@ import {
   deleteChecklistItem,
   getRevenueStats,
   getTaskStats,
+  getRevenueStatsInternal,
+  getTaskStatsInternal
 } from '../controllers/workorderController.js';
 
 const router = express.Router();
@@ -38,5 +40,7 @@ router.delete('/:work_order_id/checklist/:checklist_id', deleteChecklistItem);
 
 // Appointment endpoint
 router.get('/appointment/:work_order_id', getWorkOrderByAppointmentId);
+router.get('/internal/stats/revenue', getRevenueStatsInternal);
+router.get('/internal/stats/tasks', getTaskStatsInternal);
 
 export default router;

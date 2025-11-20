@@ -1,7 +1,7 @@
 import { createClient } from 'redis';
-import 'dotenv/config'; // Đảm bảo bạn đọc được biến môi trường
+import 'dotenv/config'; 
 
-// Địa chỉ Redis từ Docker Compose (service name là 'redis-cache')
+
 const redisUrl = process.env.REDIS_URL || 'redis://redis-cache:6379';
 
 const redisClient = createClient({

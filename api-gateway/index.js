@@ -21,6 +21,14 @@ const proxyTo = (target) =>
     timeout: 30000,
     logLevel: "warn",
     onProxyReq: (proxyReq, req, res) => {
+      // Log lại mọi request đi qua gateway
+      if (req.headers.authorization) {
+        proxyReq.setHeader("Authorization", req.headers.authorization);
+      } else {
+        console.warn(
+          "[DEBUG] !!! CẢNH BÁO: Client KHÔNG gửi 'authorization' header."
+        );
+      }
       // Forward body nếu có
       if (req.body) {
         const bodyData = JSON.stringify(req.body);
@@ -45,7 +53,6 @@ app.use("/api/notification", proxyTo("http://notification-service:5005"));
 app.use("/api/vehicle", proxyTo("http://vehicle-service:5006"));
 
 app.use("/api/workorder", proxyTo("http://workorder-service:5007"));
-app.use("/api/chat", proxyTo("http://chat-service:5008"));
 
 app.get("/health", (req, res) => res.json({ status: "ok" }));
 

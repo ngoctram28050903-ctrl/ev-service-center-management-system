@@ -2,79 +2,130 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { Op } from "sequelize";
 import sequelize from "../config/db.js";
-import { publishToExchange } from '../utils/rabbitmq.js';
-import redisClient from '../config/redis.js';
+import { publishToExchange } from "../utils/rabbitmq.js";
+import redisClient from "../config/redis.js";
 import User from "../models/user.js";
+import Role from "../models/role.js"; // Đã import
+import { v4 as uuidv4 } from "uuid";
 import RefreshToken from "../models/refreshToken.js";
+import UserRole from "../models/userRole.js"; // Đã import
 
-//thời gian hết hạn (Time-To-Live)
-const USER_DETAIL_TTL = 3600;      // 1 giờ: Cache chi tiết (profile)
-const USER_LIST_TTL = 300;         // 5 phút: Cache danh sách (thay đổi thường xuyên)
-const USER_STATS_TTL = 43200;      // 12 giờ: Cache thống kê (nặng, ít thay đổi)
 
-// Hàm helper để tạo key cho danh sách, tránh lặp code
-const getUserListCacheKey = (query) => {
-  const { name, username, email, role, page = 1, limit = 10 } = query;
-  return `users:list:page:${page}:limit:${limit}:name:${name || 'all'}:username:${username || 'all'}:email:${email || 'all'}:role:${role || 'all'}`;
+const USER_DETAIL_TTL = 3600; 
+const USER_LIST_TTL = 300; 
+const USER_STATS_TTL = 43200; 
+
+
+const invalidateUserCaches = async (userId) => {
+  console.log("[Cache] Bắt đầu vô hiệu hóa cache người dùng...");
+  try {
+    const promises = [];
+    const statsCacheKey = getUserStatsCacheKey();
+    promises.push(redisClient.del(statsCacheKey));
+    console.log(`[Cache] Đã lên lịch xóa: ${statsCacheKey}`);
+
+    const listKeyPattern = "users:list:*";
+    const listKeys = await redisClient.keys(listKeyPattern);
+    if (listKeys.length > 0) {
+      promises.push(redisClient.del(listKeys));
+      console.log(`[Cache] Đã lên lịch xóa ${listKeys.length} list keys (pattern: ${listKeyPattern})`);
+    }
+
+    if (userId) {
+      const detailCacheKey = getUserDetailCacheKey(userId);
+      promises.push(redisClient.del(detailCacheKey));
+      console.log(`[Cache] Đã lên lịch xóa: ${detailCacheKey}`);
+    }
+    
+    await Promise.all(promises);
+    console.log("[Cache] Vô hiệu hóa cache người dùng thành công.");
+  } catch (err) {
+    console.error("[Cache] Lỗi khi vô hiệu hóa cache người dùng:", err);
+  }
 };
-// Hàm helper để tạo key cho stats
-const getUserStatsCacheKey = () => {
-  const currentYear = new Date().getFullYear();
-  return `users:stats:year:${currentYear}`;
-};
+
+const getUserStatsCacheKey = () => "users:stats";
+const getUserListCacheKey = (page, limit, role) => `users:list:page:${page}:limit:${limit}:role:${role || 'all'}`;
+const getUserDetailCacheKey = (id) => `user:detail:${id}`;
+
 
 export const register = async (req, res) => {
+  const { username, email, password } = req.body;
   try {
-    const { username, email, password } = req.body;
-
-    const existingUser = await User.findOne({ where: { email } });
-    if (existingUser) return res.status(400).json({ message: "User already exists" });
-
     const hashedPassword = await bcrypt.hash(password, 10);
-    const user = await User.create({ username, email, password: hashedPassword });
-    // Gửi sự kiện cho các service
-    await publishToExchange('user_events', {
-      type: 'USER_CREATED',
-      payload: user 
+    const [user, created] = await User.findOrCreate({
+      where: { email },
+      defaults: { username, email, password: hashedPassword },
     });
 
-    // User mới -> thống kê thay đổi -> Xóa cache thống kê
-    const statsCacheKey = getUserStatsCacheKey();
-    await redisClient.del(statsCacheKey);
-    console.log(`[Cache] DELETED ${statsCacheKey} (due to new user)`);
-  
-    res.status(201).json({ message: "User registered successfully", user });
+    if (!created) {
+      return res.status(409).json({ message: "Email đã tồn tại." });
+    }
+
+    const userRole = await Role.findOne({ where: { name: "user" } });
+    if (userRole) {
+      await UserRole.create({ userId: user.id, roleId: userRole.id });
+    }
+
+    await invalidateUserCaches();
+
+    res.status(201).json({ message: "Đăng ký thành công!" });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 };
 
 export const login = async (req, res) => {
+  const { email, password } = req.body;
   try {
-    const { email, password } = req.body;
-    const user = await User.findOne({ where: { email } });
-
-    console.log(user);
-
-    if (!user) return res.status(404).json({ message: "User not found" });
-
-    const validPassword = await bcrypt.compare(password, user.password);
-    if (!validPassword) return res.status(401).json({ message: "Invalid password" });
-
-    const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET, { expiresIn: "1h" });
-    const refreshToken = await RefreshToken.create({
-      token: jwt.sign({ id: user.id }, process.env.JWT_REFRESH_SECRET, { expiresIn: "7d" }),
-      userId: user.id,
-      expiryDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+    const user = await User.findOne({
+      where: { email },
+      include: {
+        model: UserRole,
+        as: "userRoles",
+        include: { model: Role, as: "role" },
+      },
     });
 
-    res.status(200).json({ token, refreshToken: refreshToken.token, user: {
-      id: user.id,
-      username: user.username,
-      email: user.email,
-      userRoles: [{ role: { name: user.role } }] },
-      createdAt: user.createdAt,
-      updatedAt: user.updatedAt,
+    if (!user) {
+      return res.status(404).json({ message: "Email hoặc mật khẩu không đúng" });
+    }
+
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return res.status(401).json({ message: "Email hoặc mật khẩu không đúng" });
+    }
+
+    const userRoles = user.userRoles.map((ur) => ur.role.name);
+
+    const accessToken = jwt.sign(
+      { userId: user.id, roles: userRoles },
+      process.env.JWT_SECRET,
+      { expiresIn: "1h" }
+    );
+
+    const existingToken = await RefreshToken.findOne({ where: { userId: user.id } });
+    if (existingToken) {
+      await existingToken.destroy();
+    }
+
+    const refreshTokenValue = uuidv4();
+    await RefreshToken.create({
+      token: refreshTokenValue,
+      userId: user.id,
+      expiryDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+    });
+
+    // Xóa password trước khi gửi về client
+    const userResponse = user.toJSON();
+    delete userResponse.password;
+
+    res.status(200).json({
+      message: "Đăng nhập thành công",
+      accessToken,
+      refreshToken: refreshTokenValue,
+      user: userResponse,
+      roles: userRoles,
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -83,274 +134,384 @@ export const login = async (req, res) => {
 
 export const refresh = async (req, res) => {
   const { refreshToken } = req.body;
-
-  if (!refreshToken) return res.status(400).json({ message: "Refresh token required" });
-
-  const storedToken = await RefreshToken.findOne({ where: { token: refreshToken } });
-  if (!storedToken) return res.status(403).json({ message: "Invalid refresh token" });
-
-  if (storedToken.expiryDate < new Date()) {
-    await storedToken.destroy();
-    return res.status(403).json({ message: "Refresh token expired" });
+  if (!refreshToken) {
+    return res.status(401).json({ message: "Refresh token là bắt buộc" });
   }
 
-  const newAccessToken = jwt.sign({ id: storedToken.userId }, process.env.JWT_SECRET, {
-    expiresIn: "1h",
-  });
-
-  res.status(200).json({ token: newAccessToken });
-};
-
-export const indexUsers = async (req, res) => {
   try {
-    const cacheKey = getUserListCacheKey(req.query);
-    const cachedData = await redisClient.get(cacheKey);
-    if (cachedData) {
-      console.log(`[Cache] HIT for ${cacheKey}`);
-      return res.status(200).json(JSON.parse(cachedData));
-    }
-    console.log(`[Cache] MISS for ${cacheKey}`);
-    const { name, username, email, role, page = 1, limit = 10 } = req.query;
-    
-    const whereClause = {};
-
-    if (name) {
-      whereClause.username = { [Op.like]: `%${name}%` };
+    const tokenDoc = await RefreshToken.findOne({ where: { token: refreshToken } });
+    if (!tokenDoc) {
+      return res.status(403).json({ message: "Refresh token không hợp lệ" });
     }
 
-    if (username) {
-      whereClause.username = { [Op.like]: `%${username}%` };
+    if (tokenDoc.expiresAt < new Date()) {
+      await tokenDoc.destroy();
+      return res.status(403).json({ message: "Refresh token đã hết hạn" });
     }
 
-    if (email) {
-      whereClause.email = { [Op.like]: `%${email}%` };
-    }
-
-    if (role) {
-      whereClause.role = role;
-    }
-    
-    const offset = (parseInt(page) - 1) * parseInt(limit);
-    
-    const { count, rows: users } = await User.findAndCountAll({
-      where: whereClause,
-      limit: parseInt(limit),
-      offset: offset,
-      order: [['createdAt', 'DESC']]
+    const user = await User.findByPk(tokenDoc.userId, {
+      include: {
+        model: UserRole,
+        as: "userRoles",
+        include: { model: Role, as: "role" },
+      },
     });
-    
-    const mapped = users.map((u) => ({
-      id: u.id,
-      username: u.username,
-      email: u.email,
-      userRoles: [{ role: { name: u.role } }],
-      createdAt: u.createdAt,
-      updatedAt: u.updatedAt,
-    }));
-    
+    if (!user) {
+      return res.status(404).json({ message: "Không tìm thấy người dùng" });
+    }
+
+    const userRoles = user.userRoles.map((ur) => ur.role.name);
+
+    const newAccessToken = jwt.sign(
+      { userId: user.id, roles: userRoles },
+      process.env.JWT_SECRET,
+      { expiresIn: "1h" }
+    );
+
     res.status(200).json({
-      data: mapped,
-      total: count,
-      page: parseInt(page),
-      limit: parseInt(limit),
-      totalPages: Math.ceil(count / parseInt(limit)),
-      hasNext: offset + parseInt(limit) < count,
-      hasPrev: parseInt(page) > 1
+      accessToken: newAccessToken,
     });
-    await redisClient.set(cacheKey, JSON.stringify(responseData), {
-      EX: USER_LIST_TTL
-    });
-    res.status(200).json(responseData);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 };
 
-export const getUserById = async (req, res) => {
+export const indexUsers = async (req, res) => {
+  const page = parseInt(req.query.page) || 1;
+  const limit = parseInt(req.query.limit) || 10;
+  const role = req.query.role;
+  const offset = (page - 1) * limit;
+  const cacheKey = getUserListCacheKey(page, limit, role);
+
   try {
-    const { id } = req.params;
-    const cacheKey = `user:${id}`;
-    //kiểm tra cache
     const cachedData = await redisClient.get(cacheKey);
     if (cachedData) {
-      console.log(`[Cache] HIT for ${cacheKey}`);
-      // Dữ liệu lưu trong Redis là chuỗi JSON, parse lại
-      return res.status(200).json(JSON.parse(cachedData)); 
+      return res.status(200).json(JSON.parse(cachedData));
     }
-    console.log(`[Cache] MISS for ${cacheKey}`);
-    const user = await User.findByPk(id);
-    if (!user) return res.status(404).json({ message: "User not found" });
-    const responseData = {
-      id: user.id,
-      username: user.username,
-      email: user.email,
-      userRoles: [{ role: { name: user.role } }],
-      createdAt: user.createdAt,
-      updatedAt: user.updatedAt,
+
+    let includeOptions = {
+      model: Role,
+      as: 'roles', // Dùng bí danh 'roles' (từ user.js)
+      attributes: ['name'],
+      through: { attributes: [] } // Không cần lấy data từ bảng trung gian
     };
-    await redisClient.set(cacheKey, JSON.stringify(responseData), {
-      EX: USER_DETAIL_TTL
+    if (role) {
+      includeOptions.where = { name: role };
+    }
+    
+    const { count, rows } = await User.findAndCountAll({
+      attributes: { exclude: ["password"] },
+      include: [includeOptions], 
+      limit,
+      offset,
+      order: [["createdAt", "DESC"]],
+      distinct: true, 
     });
-    return res.status(200).json(responseData);
+
+    const totalPages = Math.ceil(count / limit);
+    const responseData = {
+      data: rows,
+      total: count,
+      page,
+      limit,
+      totalPages,
+      hasNext: page < totalPages,
+      hasPrev: page > 1,
+    };
+
+    await redisClient.set(cacheKey, JSON.stringify(responseData), {
+      EX: USER_LIST_TTL,
+    });
+
+    res.status(200).json(responseData);
+  } catch (err) {
+    console.error("Lỗi trong hàm indexUsers:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+export const getUserById = async (req, res) => {
+  const { id } = req.params;
+  const cacheKey = getUserDetailCacheKey(id);
+
+  try {
+    const cachedUser = await redisClient.get(cacheKey);
+    if (cachedUser) {
+      return res.status(200).json(JSON.parse(cachedUser));
+    }
+
+    const user = await User.findByPk(id, {
+      attributes: { exclude: ["password"] },
+      include: [
+        {
+          model: UserRole,
+          as: "userRoles",
+          include: {
+            model: Role,
+            as: "role",
+            attributes: ["name"],
+          },
+        },
+      ],
+    });
+
+    if (!user) {
+      return res.status(404).json({ message: "Không tìm thấy người dùng" });
+    }
+
+    const responseData = { data: user, message: "Lấy thông tin người dùng thành công" };
+    await redisClient.set(cacheKey, JSON.stringify(responseData), {
+      EX: USER_DETAIL_TTL,
+    });
+
+    res.status(200).json(responseData);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 };
 
 export const createUser = async (req, res) => {
+  const { username, email, password, roles } = req.body;
   try {
-    const { username, email, password, roles } = req.body;
-    if (!username || !email || !password) {
-      return res.status(400).json({ message: "username, email, password are required" });
-    }
-    const existingUser = await User.findOne({ where: { email } });
-    if (existingUser) return res.status(400).json({ message: "User already exists" });
-
-    const role = Array.isArray(roles) && roles.length > 0 ? roles[0] : "user";
     const hashedPassword = await bcrypt.hash(password, 10);
-    const user = await User.create({ username, email, password: hashedPassword, role });
-
-    // User mới -> thống kê thay đổi -> Xóa cache thống kê
-    const statsCacheKey = getUserStatsCacheKey();
-    await redisClient.del(statsCacheKey);
-    console.log(`[Cache] DELETED ${statsCacheKey} (due to new user)`);
-
-    res.status(201).json({
-      id: user.id,
-      username: user.username,
-      email: user.email,
-      userRoles: [{ role: { name: user.role } }],
-      createdAt: user.createdAt,
-      updatedAt: user.updatedAt,
+    const [user, created] = await User.findOrCreate({
+      where: { email },
+      defaults: { username, email, password: hashedPassword },
     });
+
+    if (!created) {
+      return res.status(409).json({ message: "Email đã tồn tại." });
+    }
+
+    if (roles && roles.length > 0) {
+      const roleObjects = await Role.findAll({ where: { name: roles } });
+      if (roleObjects.length) {
+        await UserRole.bulkCreate(
+          roleObjects.map((role) => ({ userId: user.id, roleId: role.id }))
+        );
+      }
+    }
+
+    await invalidateUserCaches();
+    res.status(201).json({ data: user, message: "Tạo người dùng thành công" });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 };
 
 export const updateUser = async (req, res) => {
+  const { id } = req.params;
+  const { username, email, password, roles } = req.body;
   try {
-    const { id } = req.params;
-    const { username, email, password, roles } = req.body;
     const user = await User.findByPk(id);
-    if (!user) return res.status(404).json({ message: "User not found" });
+    if (!user) {
+      return res.status(404).json({ message: "Không tìm thấy người dùng" });
+    }
 
-    if (username !== undefined) user.username = username;
-    if (email !== undefined) user.email = email;
-    if (Array.isArray(roles) && roles.length > 0) user.role = roles[0];
-    if (password) user.password = await bcrypt.hash(password, 10);
-
+    if (username) user.username = username;
+    if (email) user.email = email;
+    if (password) {
+      user.password = await bcrypt.hash(password, 10);
+    }
+    
     await user.save();
 
-    // Dữ liệu chi tiết đã thay đổi -> Xóa cache chi tiết
-    const cacheKey = `user:${id}`;
-    await redisClient.del(cacheKey);
-    console.log(`[Cache] DELETED ${cacheKey}`);
+    if (roles) {
+      await UserRole.destroy({ where: { userId: id } });
+      const roleObjects = await Role.findAll({ where: { name: roles } });
+      if (roleObjects.length) {
+        await UserRole.bulkCreate(
+          roleObjects.map((role) => ({ userId: user.id, roleId: role.id }))
+        );
+      }
+    }
 
-    return res.status(200).json({
-      id: user.id,
-      username: user.username,
-      email: user.email,
-      userRoles: [{ role: { name: user.role } }],
-      createdAt: user.createdAt,
-      updatedAt: user.updatedAt,
-    });
+    await invalidateUserCaches(id);
+    res.status(200).json({ message: "Cập nhật người dùng thành công" });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 };
 
 export const deleteUser = async (req, res) => {
+  const { id } = req.params;
   try {
-    const { id } = req.params;
     const user = await User.findByPk(id);
-    if (!user) return res.status(404).json({ message: "User not found" });
-
-    // Xóa cache chi tiết
-    const cacheKey = `user:${id}`;
-    await redisClient.del(cacheKey);
-    console.log(`[Cache] DELETED ${cacheKey}`);
-
-    // Xóa cache thống kê (vì totalUsers đã thay đổi)
-    const statsCacheKey = getUserStatsCacheKey();
-    await redisClient.del(statsCacheKey);
-    console.log(`[Cache] DELETED ${statsCacheKey}`);
-
+    if (!user) {
+      return res.status(404).json({ message: "Không tìm thấy người dùng" });
+    }
+    await UserRole.destroy({ where: { userId: id } });
+    await RefreshToken.destroy({ where: { userId: id } });
     await user.destroy();
-    return res.status(204).send();
+    
+    await invalidateUserCaches(id);
+    res.status(200).json({ message: "Xóa người dùng thành công" });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 };
 
 export const getUserStats = async (req, res) => {
+  const cacheKey = getUserStatsCacheKey();
   try {
-    console.log('Start getUserStats');
-    const cacheKey = getUserStatsCacheKey();
-    const cachedData = await redisClient.get(cacheKey);
-    //kiểm tra 
-    if (cachedData) {
-      console.log(`[Cache] HIT for ${cacheKey}`);
-      // Thống kê đã được cache, trả về ngay
-      return res.status(200).json(JSON.parse(cachedData));
+    const cachedStats = await redisClient.get(cacheKey);
+    if (cachedStats) {
+      return res.status(200).json(JSON.parse(cachedStats));
     }
-    console.log(`[Cache] MISS for ${cacheKey}`);
-    const totalStats = await User.findAll({
-      attributes: [
-        [sequelize.fn('COUNT', sequelize.col('id')), 'totalUsers']
-      ],
-      where: {
-        role: 'user'
-      },
-      raw: true
-    });
 
     const currentYear = new Date().getFullYear();
+
+    // Total users (chỉ role 'user')
+    const totalStats = await User.count({
+      include: {
+        model: UserRole,
+        as: 'userRoles',
+        include: { model: Role, as: 'role', where: { name: "user" } },
+        required: true // Bắt buộc phải có role 'user'
+      }
+    });
+
+    // Monthly new users (chỉ role 'user')
     const monthlyUserStats = await User.findAll({
       attributes: [
-        [sequelize.fn('MONTH', sequelize.col('createdAt')), 'month'],
-        [sequelize.fn('COUNT', sequelize.col('id')), 'count']
+        [sequelize.fn("MONTH", sequelize.col("User.createdAt")), "month"],
+        [sequelize.fn("COUNT", sequelize.col("User.id")), "count"],
       ],
+      include: {
+        model: UserRole,
+        as: 'userRoles',
+        include: { model: Role, as: 'role', where: { name: "user" } },
+        required: true,
+        attributes: []
+      },
       where: {
         createdAt: {
           [Op.gte]: new Date(currentYear, 0, 1),
-          [Op.lt]: new Date(currentYear + 1, 0, 1)
+          [Op.lt]: new Date(currentYear + 1, 0, 1),
         },
-        role: 'user'
       },
-      group: [sequelize.fn('MONTH', sequelize.col('createdAt'))],
-      order: [[sequelize.fn('MONTH', sequelize.col('createdAt')), 'ASC']],
-      raw: true
+      group: [sequelize.fn("MONTH", sequelize.col("User.createdAt"))],
+      order: [[sequelize.fn("MONTH", sequelize.col("User.createdAt")), "ASC"]],
     });
 
     const monthlyUsers = new Array(12).fill(0);
-    monthlyUserStats.forEach(stat => {
-      const monthIndex = parseInt(stat.month) - 1;
-      monthlyUsers[monthIndex] = parseInt(stat.count);
+    monthlyUserStats.forEach((stat) => {
+      const monthIndex = parseInt(stat.dataValues.month) - 1;
+      monthlyUsers[monthIndex] = parseInt(stat.dataValues.count);
     });
 
-    const result = totalStats[0] || {};
-    const totalUsers = parseInt(result.totalUsers) || 0;
+    const totalUsers = totalStats; 
 
     const userStats = {
       totalUsers,
-      monthlyUsers
+      monthlyUsers,
     };
 
-    console.log('User stats result:', userStats);
-
-    res.status(200).json({
+    console.log("User stats result (from DB):", userStats);
+    const responseData = {
       data: userStats,
-      message: 'User stats retrieved successfully'
-    });
+      message: "User stats retrieved successfully",
+    };
 
     await redisClient.set(cacheKey, JSON.stringify(responseData), {
-      EX: USER_STATS_TTL
+      EX: USER_STATS_TTL,
     });
-    console.log('User stats result (from DB):', userStats);
+
     res.status(200).json(responseData);
   } catch (err) {
-    console.error('Error getting user stats:', err);
-    res.status(500).json({ message: 'Failed to get user stats' });
+    console.error("Error getting user stats:", err);
+    res.status(500).json({ message: "Failed to get user stats" });
+  }
+};
+
+
+export const getUserByIdInternal = async (req, res) => {
+  // (Hàm này dành cho service-to-service, không dùng cache)
+  try {
+    const user = await User.findByPk(req.params.id, {
+      attributes: { exclude: ['password'] },
+      include: [
+        {
+          model: UserRole,
+          as: 'userRoles',
+          include: {
+            model: Role,
+            as: 'role',
+            attributes: ['name']
+          }
+        }
+      ]
+    });
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found (internal)' });
+    }
+    
+    // TRẢ VỀ DATA TRỰC TIẾP (cho client/index.js)
+    res.status(200).json(user);
+    
+  } catch (err) {
+    console.error("Error in getUserByIdInternal:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+export const getUserStatsInternal = async (req, res) => {
+  // (Hàm này dành cho service-to-service, không dùng cache)
+  try {
+    const currentYear = new Date().getFullYear();
+
+    // Total users (chỉ role 'user')
+    const totalStats = await User.count({
+      include: {
+        model: UserRole,
+        as: 'userRoles',
+        include: { model: Role, as: 'role', where: { name: "user" } },
+        required: true 
+      }
+    });
+
+    // Monthly new users (chỉ role 'user')
+    const monthlyUserStats = await User.findAll({
+      attributes: [
+        [sequelize.fn("MONTH", sequelize.col("User.createdAt")), "month"],
+        [sequelize.fn("COUNT", sequelize.col("User.id")), "count"],
+      ],
+      include: {
+        model: UserRole,
+        as: 'userRoles',
+        include: { model: Role, as: 'role', where: { name: "user" } },
+        required: true,
+        attributes: []
+      },
+      where: {
+        createdAt: {
+          [Op.gte]: new Date(currentYear, 0, 1),
+          [Op.lt]: new Date(currentYear + 1, 0, 1),
+        },
+      },
+      group: [sequelize.fn("MONTH", sequelize.col("User.createdAt"))],
+      order: [[sequelize.fn("MONTH", sequelize.col("User.createdAt")), "ASC"]],
+    });
+
+    const monthlyUsers = new Array(12).fill(0);
+    monthlyUserStats.forEach((stat) => {
+      const monthIndex = parseInt(stat.dataValues.month) - 1;
+      monthlyUsers[monthIndex] = parseInt(stat.dataValues.count);
+    });
+
+    const totalUsers = totalStats;
+
+    const userStats = {
+      totalUsers,
+      monthlyUsers,
+    };
+
+    // TRẢ VỀ DATA TRỰC TIẾP (cho client/index.js)
+    res.status(200).json(userStats);
+
+  } catch (err) {
+    console.error("Error getting user stats (internal):", err);
+    res.status(500).json({ message: "Failed to get user stats (internal)" });
   }
 };

@@ -1,142 +1,63 @@
 import axios from 'axios';
 
-const API_GATEWAY_URL = process.env.API_GATEWAY_URL;
+// Lấy địa chỉ TRỰC TIẾP từ .env
+const BOOKING_SERVICE_URL = process.env.BOOKING_SERVICE_URL || 'http://booking-service:5002';
+const AUTH_SERVICE_URL = process.env.AUTH_SERVICE_URL || 'http://auth-service:5001';
+const WORKORDER_SERVICE_URL = process.env.WORKORDER_SERVICE_URL || 'http://workorder-service:5007';
+const INVENTORY_SERVICE_URL = process.env.INVENTORY_SERVICE_URL || 'http://inventory-service:5004';
 
 export const bookingClient = {
     async getDashboardStats() {
-        try {
-            const response = await axios.get(`${API_GATEWAY_URL}/api/booking/stats/booking`);
-            return response.data;
-        } catch (error) {
-            console.error('Error fetching booking dashboard stats:', error.message);
-            throw new Error('Failed to fetch booking dashboard stats');
-        }
+        const response = await axios.get(`${BOOKING_SERVICE_URL}/api/booking/internal/stats/booking`);
+        return response.data;
     },
-
     async getAllAppointments(params = {}) {
-        try {
-            const response = await axios.get(`${API_GATEWAY_URL}/api/booking`, { params });
-            return response.data;
-        } catch (error) {
-            console.error('Error fetching appointments:', error.message);
-            throw new Error('Failed to fetch appointments');
-        }
+        const response = await axios.get(`${BOOKING_SERVICE_URL}/api/booking/internal`, { params });
+        return response.data;
     },
-
     async getAppointmentById(appointmentId) {
-        try {
-            const response = await axios.get(`${API_GATEWAY_URL}/api/booking/${appointmentId}`);
-            return response.data;
-        } catch (error) {
-            console.error('Error fetching appointment:', error.message);
-            throw new Error('Failed to fetch appointment');
-        }
+        const response = await axios.get(`${BOOKING_SERVICE_URL}/api/booking/internal/${appointmentId}`);
+        return response.data;
     }
 };
 
 export const workorderClient = {
     async getRevenueStats(year) {
-        try {
-            const response = await axios.get(`${API_GATEWAY_URL}/api/workorder/stats/revenue?year=${year}`);
-            return response.data;
-        } catch (error) {
-            console.error('Error fetching revenue stats:', error.message);
-            throw new Error('Failed to fetch revenue stats');
-        }
+        const response = await axios.get(`${WORKORDER_SERVICE_URL}/api/workorder/internal/stats/revenue?year=${year}`);
+        return response.data;
     },
-
-    async getTaskStats() {
-        try {
-            const response = await axios.get(`${API_GATEWAY_URL}/api/workorder/stats/tasks`);
-            return response.data;
-        } catch (error) {
-            console.error('Error fetching task stats:', error.message);
-            throw new Error('Failed to fetch task stats');
-        }
-    },
-
-    async getAllWorkOrders(params = {}) {
-        try {
-            const response = await axios.get(`${API_GATEWAY_URL}/api/workorder`, { params });
-            return response.data;
-        } catch (error) {
-            console.error('Error fetching work orders:', error.message);
-            throw new Error('Failed to fetch work orders');
-        }
-    },
-
-    async getWorkOrderById(workOrderId) {
-        try {
-            const response = await axios.get(`${API_GATEWAY_URL}/api/workorder/${workOrderId}`);
-            return response.data;
-        } catch (error) {
-            console.error('Error fetching work order:', error.message);
-            throw new Error('Failed to fetch work order');
-        }
+    async getTaskStats(year) {
+        const response = await axios.get(`${WORKORDER_SERVICE_URL}/api/workorder/internal/stats/tasks?year=${year}`);
+        return response.data;
     }
 };
 
 export const inventoryClient = {
     async getPartsStats(year) {
-        try {
-            const response = await axios.get(`${API_GATEWAY_URL}/api/inventory/parts/stats/parts?year=${year}`);
-            return response.data;
-        } catch (error) {
-            console.error('Error fetching parts stats:', error.message);
-            throw new Error('Failed to fetch parts stats');
-        }
+        const response = await axios.get(`${INVENTORY_SERVICE_URL}/api/inventory/internal/parts/stats/parts?year=${year}`);
+        return response.data;
     },
-
     async getAllParts(params = {}) {
-        try {
-            const response = await axios.get(`${API_GATEWAY_URL}/api/inventory/parts`, { params });
-            return response.data;
-        } catch (error) {
-            console.error('Error fetching parts:', error.message);
-            throw new Error('Failed to fetch parts');
-        }
+        const response = await axios.get(`${INVENTORY_SERVICE_URL}/api/inventory/internal/parts`, { params });
+        return response.data;
     },
-
     async getPartById(partId) {
-        try {
-            const response = await axios.get(`${API_GATEWAY_URL}/api/inventory/parts/${partId}`);
-            return response.data;
-        } catch (error) {
-            console.error('Error fetching part:', error.message);
-            throw new Error('Failed to fetch part');
-        }
+        const response = await axios.get(`${INVENTORY_SERVICE_URL}/api/inventory/internal/parts/${partId}`);
+        return response.data;
     }
 };
 
 export const authClient = {
     async getUserById(userId) {
-        try {
-            const response = await axios.get(`${API_GATEWAY_URL}/api/auth/users/${userId}`);
-            return response.data.data || response.data;
-        } catch (error) {
-            console.error('Error fetching user:', error.message);
-            throw new Error(`Failed to fetch user with ID ${userId}`);
-        }
+        const response = await axios.get(`${AUTH_SERVICE_URL}/api/auth/internal/users/${userId}`);
+        return response.data; 
     },
-
     async getUsersByIds(userIds) {
-        try {
-            const userPromises = userIds.map(id => this.getUserById(id));
-            const users = await Promise.all(userPromises);
-            return users;
-        } catch (error) {
-            console.error('Error fetching users:', error.message);
-            throw new Error('Failed to fetch users');
-        }
+        const userPromises = userIds.map(id => this.getUserById(id));
+        return Promise.all(userPromises);
     },
-
     async getUserStats() {
-        try {
-            const response = await axios.get(`${API_GATEWAY_URL}/api/auth/stats/users`);
-            return response.data;
-        } catch (error) {
-            console.error('Error fetching user stats:', error.message);
-            throw new Error('Failed to fetch user stats');
-        }
+        const response = await axios.get(`${AUTH_SERVICE_URL}/api/auth/internal/stats/users`);
+        return response.data;
     }
 };

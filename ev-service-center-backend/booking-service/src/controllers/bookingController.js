@@ -206,10 +206,13 @@ export const getAllAppointments = async (req, res) => {
 
     console.log(`[Cache] MISS for ${cacheKey}`);
     const { rows, count } = await Appointment.findAndCountAll({
-      include: [{
-        model: ServiceCenter,
-        as: 'serviceCenter'
-      }],
+      include: [
+        {
+          model: ServiceCenter,
+          as: 'serviceCenter', // Tên 'as' này phải khớp với model 'appointment.js' của bạn
+          attributes: ['name'] // Chỉ lấy những trường cần thiết
+        }
+      ],
       limit,
       offset,
       order: [['createdAt', 'DESC']]
@@ -228,7 +231,10 @@ export const getAllAppointments = async (req, res) => {
     await redisClient.set(cacheKey, JSON.stringify(responseData), {
       EX: BOOKING_LIST_TTL
     });
-    res.status(200).json(responseData);
+    res.status(200).json({
+      data: rows,
+      total: count,
+    });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -315,62 +321,84 @@ export const getAppointmentsByUserId = async (req, res) => {
  * Lấy lịch rảnh (Availability)
  */
 export const getAvailability = async (req, res) => {
-  try {
-    const { date, centerId } = req.query;
-    if (!date || !centerId) {
-      return res.status(400).json({ message: "Date and centerId are required" });
+    const { serviceCenterId, date } = req.query;
+    if (!serviceCenterId || !date) {
+    return res.status(400).json({ message: 'serviceCenterId và date là bắt buộc' });
     }
 
-    const cacheKey = `availability:date:${date}:center:${centerId}`;
-
-    const cachedData = await redisClient.get(cacheKey);
-    if (cachedData) {
+    const cacheKey = `availability:${serviceCenterId}:date:${date}`;
+    try {
+      const cachedData = await redisClient.get(cacheKey);
+      if (cachedData) {
       console.log(`[Cache] HIT for ${cacheKey}`);
       return res.status(200).json({ busySlots: JSON.parse(cachedData) });
-    }
-    console.log(`[Cache] MISS for ${cacheKey}`);
-    const appointments = await Appointment.findAll({
-      where: {
-        appointmentTime: {
-          [Op.between]: [`${date} 00:00:00`, `${date} 23:59:59`]
+      }
+      console.log(`[Cache] MISS for ${cacheKey}`);
+      const appointments = await Appointment.findAll({
+        where: {
+          serviceCenterId: serviceCenterId,
+          date: date,
+          status: { [Op.ne]: 'cancelled' }
         },
-        serviceCenterId: centerId,
-        status: {
-          [Op.ne]: 'cancelled'
-        }
-      },
-      attributes: ['appointmentTime']
-    });
-    const busySlots = appointments.map(a => a.appointmentTime);
+        attributes: ['timeSlot']
+      });
+      const bookedSlots = existingAppointments.map(app => app.timeSlot);
+      const ALL_TIME_SLOTS = [
+          '08:00', '08:30', '09:00', '09:30', '10:00', '10:30', '11:00', '11:30',
+          '13:30', '14:00', '14:30', '15:00', '15:30', '16:00', '16:30'
+      ];
+      const availableSlots = ALL_TIME_SLOTS.filter(slot => !bookedSlots.includes(slot));
 
-    // LƯU VÀO CACHE (với TTL ngắn)
-    await redisClient.set(cacheKey, JSON.stringify(busySlots), {
-      EX: AVAILABILITY_TTL
-    });
-
-    res.status(200).json({
-      busySlots
-    });
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-};
+      const responseData = {
+        data: availableSlots,
+        message: 'Lấy lịch rảnh thành công'
+      };
+      await redisClient.set(cacheKey, JSON.stringify(responseData), {
+        EX: AVAILABILITY_TTL // LƯU VÀO CACHE (với TTL ngắn)
+      });
+      res.status(200).json(responseData);
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  };
 
 export const createAppointment = async (req, res) => {
+  const t = await sequelize.transaction(); 
   try {
-    const vehicle = await vehicleClient.getVehicleById(req.body.vehicleId);
-    if (!vehicle) {
-      return res.status(404).json({ message: 'Vehicle not found' });
+    const { userId, createdById, vehicleId, serviceCenterId, date, timeSlot, notes } = req.body;
+    if (!userId || !createdById || !vehicleId || !serviceCenterId || !date || !timeSlot) {
+      await t.rollback(); 
+      return res.status(400).json({ message: 'Thiếu thông tin bắt buộc (userId, createdById, vehicleId, ...)' });
     }
-    const appointment = await Appointment.create({ 
-      ...req.body,
-      userId: vehicle.userId,
-    });
+    const vehicle = await vehicleClient.getVehicleById(vehicleId);
+    if (!vehicle) {
+      await t.rollback();
+      return res.status(404).json({ message: 'Không tìm thấy Vehicle' });
+    }
     
-    const appointmentWithDetails = await getAppointmentDetails(appointment);
+    const serviceCenter = await ServiceCenter.findByPk(serviceCenterId);
+    if (!serviceCenter) {
+      await t.rollback();
+      return res.status(404).json({ message: 'Không tìm thấy ServiceCenter' });
+    }
+
+    // TẠO APPOINTMENT 
+    const newAppointment = await Appointment.create({ 
+      userId: userId,           
+      createdById: createdById, 
+      vehicleId: vehicleId,
+      serviceCenterId: serviceCenterId,
+      date: date,
+      timeSlot: timeSlot,
+      notes: notes,
+      status: 'pending'          
+    }, { 
+      transaction: t              
+    });
+    const appointmentWithDetails = await getAppointmentDetails(newAppointment); 
     
     await notifyStaffNewAppointment(
-      appointment,
+      newAppointment,
       appointmentWithDetails.user,
       appointmentWithDetails.vehicle
     );
@@ -379,28 +407,32 @@ export const createAppointment = async (req, res) => {
       type: 'APPOINTMENT_CREATED',
       payload: appointmentWithDetails
     };
-    await publishToExchange('booking_events', eventMessage); // Gửi tin nhắn
-   
-    // 1. Xóa cache 'Lịch rảnh' (QUAN TRỌNG NHẤT)
-    const appointmentDate = appointment.date; 
-    const availabilityCacheKey = `availability:date:${appointmentDate}:center:${appointment.serviceCenterId}`;
+    await publishToExchange('booking_events', eventMessage);
+    
+    // XÓA CACHE (Logic này của bạn đã tốt, chỉ sửa lại key)
+    // Key cache 'Lịch rảnh'
+    const availabilityCacheKey = `availability:date:${date}:center:${serviceCenterId}`; // (Hoặc key của bạn)
     await redisClient.del(availabilityCacheKey);
     
-    // 2. Xóa cache 'Thống kê'
+    // Xóa cache 'Thống kê'
     const statsCacheKey = getBookingStatsCacheKey();
     await redisClient.del(statsCacheKey);
     
-    
-    // (Tùy chọn: Xóa cache trang 1 của danh sách)
+    // Xóa cache danh sách (SỬA LỖI 4: Dùng userId gốc)
     await redisClient.del(`bookings:all:page:1:limit:10`);
-    await redisClient.del(`bookings:user:${appointment.userId}:page:1:limit:10`);
+    await redisClient.del(`bookings:user:${userId}:page:1:limit:10`); 
+
+   
+    await t.commit(); 
 
     res.status(201).json({
       data: appointmentWithDetails,
-      message: 'Appointment created successfully (Vehicle check was skipped)'
+      message: 'Tạo lịch hẹn thành công'
     });
+
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    await t.rollback(); 
+    res.status(500).json({ message: err.message });
   }
 };
 
@@ -423,12 +455,12 @@ export const updateAppointment = async (req, res) => {
         newStatus
       );
     }
-    // 1. Luôn xóa cache chi tiết
+    // Luôn xóa cache chi tiết
     const detailCacheKey = `booking:detail:${req.params.id}`;
     await redisClient.del(detailCacheKey);
     console.log(`[Cache] DELETED ${detailCacheKey}`);
 
-    // 2. Nếu hủy lịch -> Xóa cache 'Lịch rảnh' và 'Thống kê'
+    // Nếu hủy lịch -> Xóa cache 'Lịch rảnh' và 'Thống kê'
     if (newStatus === 'cancelled' && oldStatus !== 'cancelled') {
       const appointmentDate = new Date(appointment.appointmentTime).toISOString().split('T')[0];
       const availabilityCacheKey = `availability:date:${appointmentDate}:center:${appointment.serviceCenterId}`;
@@ -457,7 +489,7 @@ export const deleteAppointment = async (req, res) => {
     const appointment = await Appointment.findByPk(req.params.id);
     if (!appointment) return res.status(404).json({ message: 'Appointment not found' });
 
-    // --- REDIS: Bước 4 (Invalidation) - Phải xóa TRƯỚC khi xóa DB ---
+    // --- REDIS: - Phải xóa TRƯỚC khi xóa DB ---
     // (Hoặc lấy thông tin cần thiết trước)
     const detailCacheKey = `booking:detail:${req.params.id}`;
     const statsCacheKey = getBookingStatsCacheKey();
@@ -491,14 +523,14 @@ export const getBookingStats = async (req, res) => {
 
     const cacheKey = getBookingStatsCacheKey();
 
-    // 1. KIỂM TRA CACHE
+    // KIỂM TRA CACHE
     const cachedData = await redisClient.get(cacheKey);
     if (cachedData) {
       console.log(`[Cache] HIT for ${cacheKey}`);
       return res.status(200).json(JSON.parse(cachedData));
     }
 
-    // 2. CACHE MISS -> LẤY TỪ DB
+    // CACHE MISS -> LẤY TỪ DB
     console.log(`[Cache] MISS for ${cacheKey}`);
     const totalStats = await Appointment.findAll({
       attributes: [
@@ -545,7 +577,7 @@ export const getBookingStats = async (req, res) => {
       message: 'Booking stats retrieved successfully'
     };
 
-    // 3. LƯU VÀO CACHE (với TTL dài)
+    //LƯU VÀO CACHE (với TTL dài)
     await redisClient.set(cacheKey, JSON.stringify(responseData), {
       EX: BOOKING_STATS_TTL
     });
@@ -555,6 +587,46 @@ export const getBookingStats = async (req, res) => {
   } catch (err) {
     console.error('Error getting booking stats:', err);
     res.status(500).json({ message: 'Failed to get booking stats' });
+  }
+};
+
+// (Hàm này dành cho client/index.js của finance-service)
+export const getBookingStatsInternal = async (req, res) => {
+  try {
+    const stats = await getBookingStats(req, res); 
+    res.status(200).json(stats.data); // Trả về data trực tiếp
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// (Hàm này dành cho client/index.js của finance-service)
+export const getAllAppointmentsInternal = async (req, res) => {
+  try {
+    const result = await getAllAppointments(req, res); 
+    res.status(200).json(result.data); // Trả về data trực tiếp
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// (Hàm này dành cho client/index.js của finance-service và workorder-service)
+export const getAppointmentByIdInternal = async (req, res) => {
+  try {
+    const result = await getAppointmentById(req, res); // Hoặc copy logic vào đây
+    res.status(200).json(result.data); // Trả về data trực tiếp
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// (Hàm này dành cho client/index.js của workorder-service)
+export const getAppointmentsByUserIdInternal = async (req, res) => {
+  try {
+    const result = await getAppointmentsByUserId(req, res); 
+    res.status(200).json(result.data); // Trả về data trực tiếp
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
 };
 
