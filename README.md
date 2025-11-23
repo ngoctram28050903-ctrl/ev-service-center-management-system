@@ -1,5 +1,5 @@
 # Môn học: Xây dựng phần mềm Hướng Đối Tượng
-# Giao viên hướng dẫn: 
+# Giao viên hướng dẫn: Nguyen Van Chien
 # Nhóm Ngọc Trâm: 
  Thành viên:
   - Nguyễn Thị Ngọc Trâm   (NT)

@@ -50,27 +50,31 @@ services:
       timeout: 5s
       retries: 5
 
-  nifi-apache:
-    image: apache/nifi:1.25.0 
-    container_name: ev_nifi
-    ports:
-      - "8443:8443" 
-      - "9090:9090"
-    environment:
-      - NIFI_WEB_HTTPS_PORT=8443
-      - NIFI_WEB_HTTPS_HOST=0.0.0.0
-    volumes:
-      - nifi_data_volume_v3:/opt/nifi/nifi-current/data
-      - nifi_conf_volume_v3:/opt/nifi/nifi-current/conf
-      - nifi_logs_volume_v3:/opt/nifi/nifi-current/logs
-    networks:
-      - ev_network
-    healthcheck:
-      test: ["CMD", "curl", "-k", "-f", "https://localhost:8443/nifi"] 
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 5m
+  # nifi-apache:
+  #   image: apache/nifi:1.12.1
+  #   container_name: ev_nifi_fixed
+  #   ports:
+  #     - "8888:8080" 
+  #   environment:
+  #     - NIFI_WEB_HTTPS_PORT=8080
+  #     - NIFI_WEB_HTTPS_HOST=0.0.0.0
+  #     - NIFI_SENSITIVE_PROPS_KEY=YourSuperSecretKeyOnlyYouKnow123!
+  #   volumes:
+  #     - nifi_data_fixed_v2:/opt/nifi/nifi-current/data
+  #     - nifi_conf_fixed_v2:/opt/nifi/nifi-current/conf
+  #     - nifi_logs_fixed_v2:/opt/nifi/nifi-current/logs
+  #   networks:
+  #     - ev_network
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         memory: 2G
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-k", "-f", "https://localhost:8080/nifi"] 
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 5
+  #     start_period: 180s
 
   auth-service:
     build: ../ev-service-center-backend/auth-service
@@ -286,9 +290,9 @@ networks:
     name: infra_ev_network
     driver: bridge
 volumes:
-  nifi_data_volume_v3:
-  nifi_conf_volume_v3:
-  nifi_logs_volume_v3:
+  nifi_data_fixed_v2:
+  nifi_conf_fixed_v2:
+  nifi_logs_fixed_v2:
   rabbitmq_data:
   redis_data:
   ev_mysql_data:
