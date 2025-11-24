@@ -1,13 +1,15 @@
-import { Roboto } from 'next/font/google';
-import './globals.css';
+import type { Metadata } from "next";
+import { Inter } from "next/font/google";
+import "./globals.css";
+// 👇 Import Widget
+import CustomerChatWidget from "@/components/chat/CustomerChatWidget"; 
 
-import { SidebarProvider } from '@/context/SidebarContext';
-import { ThemeProvider } from '@/context/ThemeContext';
-import ToasterProvider from '@/components/ui/toast';
+const inter = Inter({ subsets: ["latin"] });
 
-const roboto = Roboto({
-  subsets: ["latin"],
-});
+export const metadata: Metadata = {
+  title: "EV Service Center",
+  description: "Hệ thống bảo dưỡng xe điện",
+};
 
 export default function RootLayout({
   children,
@@ -16,13 +18,13 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body suppressHydrationWarning className={`${roboto.className} dark:bg-gray-900`}>
-        <ThemeProvider>
-          <SidebarProvider>
-            <ToasterProvider />
-            {children}
-          </SidebarProvider>
-        </ThemeProvider>
+      <body className={inter.className}>
+        {/* Phần Main Content */}
+        {children}
+        
+        {/* 👇 Gắn Chat Widget vào đây (Nó sẽ nổi lên trên cùng) */}
+        <CustomerChatWidget />
+        
       </body>
     </html>
   );

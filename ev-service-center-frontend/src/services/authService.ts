@@ -31,7 +31,7 @@ export interface RegisterResponse {
 }
 
 export interface LoginResponse {
-    accessToken: string;
+    token: string;
     refreshToken: string;
     user: User;
 }

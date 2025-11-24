@@ -7,10 +7,7 @@ import {
   deletePart, 
   updateStock, 
   getStockHistory,
-  getPartsStats,
-  getPartStatsInternal,
-  getAllPartsInternal,
-  getPartByIdInternal
+  getPartsStats
 } from "../controllers/partController.js";
 
 const router = Router();
@@ -26,8 +23,5 @@ router.delete("/:id", deletePart);
 // Stock operations
 router.put("/:id/stock", updateStock);
 router.get("/:id/stock-history", getStockHistory);
-router.get('/internal/parts/stats/parts', getPartStatsInternal);
-router.get('/internal/parts', getAllPartsInternal);
-router.get('/internal/parts/:id', getPartByIdInternal);
 
 export default router;

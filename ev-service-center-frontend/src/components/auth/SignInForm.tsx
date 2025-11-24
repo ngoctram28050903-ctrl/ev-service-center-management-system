@@ -69,7 +69,7 @@ export default function SignInForm() {
     try {
       const response = await login(formData);
       // Store token in localStorage
-      localStorage.setItem("token", response.accessToken);
+      localStorage.setItem("token", response.token);
       localStorage.setItem("refreshToken", response.refreshToken);
       localStorage.setItem("user", JSON.stringify(response.user));
 

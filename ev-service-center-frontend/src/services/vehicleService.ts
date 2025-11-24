@@ -1,5 +1,6 @@
 import { httpClient } from "@/lib/httpClient";
-import { RowData, User } from "@/types/common"; // Import User từ file common
+import { RowData } from "@/types/common";
+import { PaginatedVehicleResponse, SearchVehicleDto } from "./userService";
 
 export interface Vehicle extends RowData {
     id: number;
@@ -36,7 +37,7 @@ export interface CreateVehicleRequest {
     brand: string;
     model: string;
     year: number;
-    userId: number | null; // (Giữ nguyên, logic form sẽ xử lý)
+    userId: number | null;
 }
 
 export interface UpdateVehicleRequest {
@@ -53,110 +54,51 @@ export interface CreateReminderRequest {
     date: string;
 }
 
-// SỬA: Interface này phải khớp với backend (vehicle-service)
-export interface PaginatedVehicleResponse {
-    data: Vehicle[];
-    total: number;
-    page: number;
-    limit: number;
-    totalPages: number;
-    hasNext: boolean;
-    hasPrev: boolean;
-}
-
-// SỬA: Interface này phải khớp với backend (auth-service)
-export interface PaginatedUserResponse {
-    data: User[];
-    total: number;
-    page: number;
-    limit: number;
-    totalPages: number;
-    hasNext: boolean;
-    hasPrev: boolean;
-}
-
-
-// --- CÁC HÀM API ĐÃ SỬA (Thêm Generics) ---
-
-export const getAllVehicles = async (searchParams?: {
-    keyword?: string;
-    userId?: number;
-    page?: number;
-    limit?: number;
-}): Promise<PaginatedVehicleResponse> => {
+export const getAllVehicles = async (searchParams?: SearchVehicleDto): Promise<PaginatedVehicleResponse> => {
     const params = new URLSearchParams();
     if (searchParams) {
       Object.entries(searchParams).forEach(([key, value]) => {
         if (value !== undefined && value !== null && value !== '') {
-            params.append(key, value.toString());
+          params.append(key, value.toString());
         }
       });
     }
-
-    // `httpClient` (Bước 1) trả về: { data: [...], total: ... }
-    const res = await httpClient.get<PaginatedVehicleResponse>(`/api/vehicle?${params.toString()}`);
+    const res = await httpClient.get(`/api/vehicle?${params.toString()}`);
     return res.data;
 };
 
 export const getVehicleById = async (id: number): Promise<Vehicle> => {
-    // `httpClient` (Bước 1) trả về: response wrapper whose .data is the payload { data: Vehicle }
-    const res = await httpClient.get<{ data: Vehicle }>(`/api/vehicle/${id}`);
-    return res.data.data;
+    const res = await httpClient.get(`/api/vehicle/${id}`);
+    return res.data.data || res.data;
 };
 
 export const getVehiclesByUserId = async (userId: number): Promise<Vehicle[]> => {
-    // `httpClient` (Bước 1) trả về: { data: [...] }
-    const res = await httpClient.get<{ data: Vehicle[] }>(`/api/vehicle/user/${userId}`);
-    return res.data.data;
+    const res = await httpClient.get(`/api/vehicle/user/${userId}`);
+    return res.data.data || res.data;
 };
 
 // Aliases for backward compatibility
 export const getVehicles = getAllVehicles;
-
 export const createVehicle = async (data: CreateVehicleRequest): Promise<Vehicle> => {
-    // `httpClient` (Bước 1) trả về: { data: { id: ..., ... } }
-    const res = await httpClient.post<{ data: Vehicle }>('/api/vehicle/', data);
-    return res.data.data;
+    const res = await httpClient.post('/api/vehicle/', data);
+    return res.data.data || res.data;
 };
 
 export const updateVehicle = async (id: number, data: UpdateVehicleRequest): Promise<Vehicle> => {
-    // `httpClient` (Bước 1) trả về: { data: { id: ..., ... } }
-    const res = await httpClient.put<{ data: Vehicle }>(`/api/vehicle/${id}`, data);
-    return res.data.data;
+    const res = await httpClient.put(`/api/vehicle/${id}`, data);
+    return res.data.data || res.data;
 };
 
-export const deleteVehicle = async (id: number): Promise<{ message: string }> => {
-    // `httpClient` (Bước 1) trả về: { message: '...' }
-    const res = await httpClient.delete<{ message: string }>(`/api/vehicle/${id}`);
-    return res.data;
+export const deleteVehicle = async (id: number): Promise<void> => {
+    await httpClient.delete(`/api/vehicle/${id}`);
 };
 
 export const addReminder = async (vehicleId: number, data: CreateReminderRequest): Promise<Reminder> => {
-    // `httpClient` (Bước 1) trả về: { data: { id: ..., ... } }
-    const res = await httpClient.post<{ data: Reminder }>(`/api/vehicle/${vehicleId}/reminders`, data);
-    return res.data.data;
+    const res = await httpClient.post(`/api/vehicle/${vehicleId}/reminders`, data);
+    return res.data.data || res.data;
 };
 
-export const getReminders = async (vehicleId: number, params?: { page?: number; limit?: number }): Promise<PaginatedResponse<Reminder>> => {
-    // `httpClient` (Bước 1) trả về: { data: [...], total: ... }
-    const res = await httpClient.get<PaginatedResponse<Reminder>>(`/api/vehicle/${vehicleId}/reminders`, { params });
-    return res.data;
+export const getReminders = async (vehicleId: number): Promise<Reminder[]> => {
+    const res = await httpClient.get(`/api/vehicle/${vehicleId}/reminders`);
+    return res.data.data || res.data;
 };
-
-// Hàm này gọi auth-service, chúng ta phải sửa nó
-export const getAllUsers = async (params?: { page?: number; limit?: number }): Promise<PaginatedUserResponse> => {
-    // `httpClient` (Bước 1) trả về: { data: [...], total: ... }
-    const res = await httpClient.get<PaginatedUserResponse>('/api/auth/users', { params });
-    return res.data;
-};
-
-// Helper interface for paginated responses (có thể đưa ra file common)
-export interface PaginatedResponse<T> {
-  data: T[];
-  total: number;
-  page: number;
-  limit: number;
-  totalPages: number;
-  hasNext: boolean;
-  hasPrev: boolean;
-}

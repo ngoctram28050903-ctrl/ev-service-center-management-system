@@ -1,3 +1,4 @@
+
 services:
   mysql:
     image: mysql:8.0
@@ -9,7 +10,6 @@ services:
       - "3307:3306"
     volumes:
       - ./mysql:/docker-entrypoint-initdb.d
-      - ev_mysql_data:/var/lib/mysql
     networks:
       - ev_network
     healthcheck:
@@ -18,84 +18,37 @@ services:
       retries: 10
       timeout: 5s
 
-  rabbitmq:
-    image: rabbitmq:3-management
-    container_name: ev_rabbitmq
+  nifi-apache:
+    image: apache/nifi:1.12.1
+    container_name: ev_nifi_fixed
     ports:
-      - "5672:5672" 
-      - "15672:15672"
+      - "8888:8080" 
+    environment:
+      - NIFI_WEB_HTTPS_PORT=8080
+      - NIFI_WEB_HTTPS_HOST=0.0.0.0
+      - NIFI_SENSITIVE_PROPS_KEY=YourSuperSecretKeyOnlyYouKnow123!
     volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
+      - nifi_data_fixed_v2:/opt/nifi/nifi-current/data
+      - nifi_conf_fixed_v2:/opt/nifi/nifi-current/conf
+      - nifi_logs_fixed_v2:/opt/nifi/nifi-current/logs
     networks:
       - ev_network
-    healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 5s
-
-  redis-cache:
-    image: redis:7-alpine
-    container_name: ev_redis
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    networks:
-      - ev_network
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"] 
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  # nifi-apache:
-  #   image: apache/nifi:1.12.1
-  #   container_name: ev_nifi_fixed
-  #   ports:
-  #     - "8888:8080" 
-  #   environment:
-  #     - NIFI_WEB_HTTPS_PORT=8080
-  #     - NIFI_WEB_HTTPS_HOST=0.0.0.0
-  #     - NIFI_SENSITIVE_PROPS_KEY=YourSuperSecretKeyOnlyYouKnow123!
-  #   volumes:
-  #     - nifi_data_fixed_v2:/opt/nifi/nifi-current/data
-  #     - nifi_conf_fixed_v2:/opt/nifi/nifi-current/conf
-  #     - nifi_logs_fixed_v2:/opt/nifi/nifi-current/logs
-  #   networks:
-  #     - ev_network
-  #   deploy:
-  #     resources:
-  #       limits:
-  #         memory: 2G
-  #   healthcheck:
-  #     test: ["CMD", "curl", "-k", "-f", "https://localhost:8080/nifi"] 
-  #     interval: 30s
-  #     timeout: 10s
-  #     retries: 5
-  #     start_period: 180s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
 
   auth-service:
     build: ../ev-service-center-backend/auth-service
     container_name: ev_auth_service
     env_file: 
       - ../ev-service-center-backend/auth-service/.env
-    environment:
-      - PORT:5001
     ports:
       - "5001:5001"
-    healthcheck:  
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:5001/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
     depends_on:
       mysql:
         condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
+    command: sh -c "sleep 10 && node index.js" 
     networks:
       - ev_network
     restart: always
@@ -105,26 +58,12 @@ services:
     container_name: ev_booking_service
     env_file:
       - ../ev-service-center-backend/booking-service/.env
-    environment:
-      - PORT=5002
-      - VEHICLE_SERVICE_URL=http://ev_vehicle_service:5006
-      - USER_SERVICE_URL=http://ev_auth_service:5001
-      - API_GATEWAY_URL=http://api-gateway:8080
     ports:
       - "5002:5002"
-    healthcheck: 
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:5002/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
     depends_on:
       mysql:
         condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
-      # api-gateway:
-      #   condition: service_healthy
+    command: sh -c "sleep 10 && node index.js"
     networks:
       - ev_network
     restart: always
@@ -134,21 +73,12 @@ services:
     container_name: ev_finance_service
     env_file: 
       - ../ev-service-center-backend/finance-service/.env
-    environment:
-      - PORT=5003
     ports:
       - "5003:5003"
-    healthcheck: 
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:5003/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
     depends_on:
       mysql:
         condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
+    command: sh -c "sleep 10 && node index.js"   
     networks:
       - ev_network
     restart: always
@@ -158,21 +88,12 @@ services:
     container_name: ev_inventory_service
     env_file: 
       - ../ev-service-center-backend/inventory-service/.env
-    environment:
-      - PORT=5004
     ports:
       - "5004:5004"
-    healthcheck: 
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:5004/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
     depends_on:
       mysql:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
+       condition: service_healthy
+    command: sh -c "sleep 10 && node index.js"
     networks:
       - ev_network
     restart: always
@@ -182,21 +103,12 @@ services:
     container_name: ev_notification_service
     env_file: 
       - ../ev-service-center-backend/notification-service/.env
-    environment:
-      - PORT=5005
     ports:
       - "5005:5005"
-    healthcheck:  
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:5005/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
     depends_on:
       mysql:
         condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
+    command: sh -c "sleep 10 && node index.js"
     networks:
       - ev_network
     restart: always
@@ -206,49 +118,46 @@ services:
     container_name: ev_vehicle_service
     env_file: 
       - ../ev-service-center-backend/vehicle-service/.env
-    environment:
-      - PORT=5006
     ports:
       - "5006:5006"
-    healthcheck:  
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:5006/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
     depends_on:
       mysql:
         condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
+    command: sh -c "sleep 10 && node index.js"
     networks:
       - ev_network
     restart: always
 
-  workorder-service: 
+  workorder-service:  
     build: ../ev-service-center-backend/workorder-service
     container_name: ev_workorder_service
     env_file: 
       - ../ev-service-center-backend/workorder-service/.env
-    environment:
-      - PORT=5007
     ports:
       - "5007:5007"
-    healthcheck:  
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:5007/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
     depends_on:
       mysql:
         condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
+    command: sh -c "sleep 10 && node index.js"
     networks:
       - ev_network
     restart: always
   
+  # chat-service:  
+  #   build: ../ev-service-center-backend/chat-service
+  #   container_name: ev_chat_service
+  #   env_file: 
+  #     - ../ev-service-center-backend/chat-service/.env
+  #   ports:
+  #     - "5008:5008"
+  #   depends_on:
+  #     mysql:
+  #       condition: service_healthy
+  #   command: sh -c "sleep 10 && node index.js"
+  #   networks:
+  #     - ev_network
+  #   restart: always
+
   api-gateway:
     build:
       context: ../api-gateway
@@ -262,26 +171,14 @@ services:
       - NODE_ENV=production
       - PORT=8080
     depends_on:
-      auth-service:
-        condition: service_healthy
-      booking-service:
-        condition: service_healthy
-      finance-service:
-        condition: service_healthy
-      inventory-service:
-        condition: service_healthy
-      notification-service:
-        condition: service_healthy
-      vehicle-service:
-        condition: service_healthy
-      workorder-service:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
+      - auth-service
+      - booking-service
+      - vehicle-service
+      - workorder-service
+      - finance-service
+      - inventory-service
+      # - chat-service
+      - notification-service
     networks:
       - ev_network
 
@@ -293,8 +190,3 @@ volumes:
   nifi_data_fixed_v2:
   nifi_conf_fixed_v2:
   nifi_logs_fixed_v2:
-  rabbitmq_data:
-  redis_data:
-  ev_mysql_data:
-
-

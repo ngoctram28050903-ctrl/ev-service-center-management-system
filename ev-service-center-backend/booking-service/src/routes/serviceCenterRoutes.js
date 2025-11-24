@@ -6,15 +6,14 @@ import {
   updateServiceCenter,
   deleteServiceCenter
 } from '../controllers/serviceCenterController.js';
-import { verifyToken, isAdmin } from '../middlewares/authMiddlewares.js';
 
 const router = express.Router();
 
 router.get('/', getAllServiceCenters);
 router.get('/:id', getServiceCenterById);
-router.post('/', verifyToken, isAdmin, createServiceCenter);
-router.put('/:id', verifyToken, isAdmin, updateServiceCenter);
-router.delete('/:id', verifyToken, isAdmin, deleteServiceCenter);
+router.post('/', createServiceCenter);
+router.put('/:id', updateServiceCenter);
+router.delete('/:id', deleteServiceCenter);
 
 export default router;
 

@@ -52,8 +52,7 @@ export const getServiceCenterById = async (req, res) => {
 
 export const createServiceCenter = async (req, res) => {
   try {
-    const { name, address, phone, email } = req.body;
-    const created = await ServiceCenter.create({ name, address, phone, email });
+    const created = await ServiceCenter.create(req.body);
     res.status(201).json({
       data: created,
       message: 'Service center created successfully'
@@ -68,8 +67,7 @@ export const updateServiceCenter = async (req, res) => {
     const serviceCenter = await ServiceCenter.findByPk(req.params.id);
     if (!serviceCenter) return res.status(404).json({ message: 'Service center not found' });
 
-    const { name, address, phone, email } = req.body;
-    await serviceCenter.update({ name, address, phone, email });
+    await serviceCenter.update(req.body);
     res.status(200).json({
       data: serviceCenter,
       message: 'Service center updated successfully'
